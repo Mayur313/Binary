@@ -1,3 +1,13 @@
+import os
+# Force install the browser and its Linux dependencies
+os.system("playwright install chromium")
+os.system("playwright install-deps chromium")
+
+import streamlit as st
+import streamlit.components.v1 as components
+from playwright.async_api import async_playwright
+# ... rest of your imports
+
 import streamlit as st
 import streamlit.components.v1 as components
 from playwright.async_api import async_playwright
@@ -184,9 +194,8 @@ async def scan_pairs_batch(context, pair_count, start_index, step, status_queue,
 async def bot_main_loop(email, password, status_queue, pause_event, stop_event):
     async with async_playwright() as p:
         browser = await p.chromium.launch(
-            headless=False,
-            slow_mo=150,
-            args=['--window-size=800,600', '--window-position=0,0']
+            headless=True,  # MUST be True on Streamlit Cloud
+            args=['--window-size=800,600']
         )
         context = await browser.new_context(viewport={'width': 800, 'height': 600})
         main_page = await context.new_page()
