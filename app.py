@@ -1,737 +1,296 @@
-import os
-# Force install the browser and its Linux dependencies
-os.system("playwright install chromium")
-os.system("playwright install-deps chromium")
+# AQ.Ab8RN6IzwsuciGIjST8209oOSuzeLGoH781sg4TesZvVGxLevA
+
 
 import streamlit as st
 import streamlit.components.v1 as components
-from playwright.async_api import async_playwright
-import asyncio
-import html
-import time
-import queue
-import threading
-import sys
-import re
-import os
-import csv
-from datetime import datetime
+import json
+from PIL import Image
+from google import genai
+from datetime import datetime, timedelta
 
-# ==========================================
-# CONFIGURATION & XPATHS
-# ==========================================
-URL = "https://kumarshekhjournal.com/signal"
+# 1. Initialize the Gemini Client
+client = genai.Client(api_key="AQ.Ab8RN6KD-ntRbySz0N6Occomp8170th8g3PxK64pjreBuOeC5Q")
 
-# --- TARGET PAIRS FILTER ---
-TARGET_PAIRS = [
-    # From image_837581.png
-    "AUD/NZD (OTC)", "CAD/CHF (OTC)", "NZD/CAD (OTC)", "USD/DZD (OTC)", "USD/PKR (OTC)",
-    "EUR/JPY", "EUR/GBP", "USD/ZAR (OTC)", "USD/BRL (OTC)", "CAD/JPY", "EUR/NZD (OTC)", "USD/COP (OTC)",
-    # From image_837540.png
-    "USD/EGP (OTC)", "USD/MXN (OTC)", "USD/PHP (OTC)", "USD/IDR (OTC)", "USD/NGN (OTC)",
-    "GBP/USD", "USD/JPY", "GBP/NZD (OTC)", "NZD/JPY (OTC)", "AUD/CAD", "EUR/AUD", "NZD/CHF (OTC)",
-    # From image_83755f.png
-    "USD/ARS (OTC)", "USD/BDT (OTC)", "EUR/USD", "AUD/CHF", "AUD/JPY", "GBP/AUD", "GBP/CHF",
-    "GBP/JPY", "AUD/USD", "CHF/JPY", "EUR/CAD", "NZD/USD (OTC)", "GBP/CAD"
-]
+# 2. Configure the Streamlit Page
+st.set_page_config(page_title="Ultra-Fast Terminal", layout="wide", initial_sidebar_state="collapsed")
 
-SIGNAL_MENU_XPATH = "/html/body/div/div[2]/aside/nav/div[5]/a/span[3]"
-OTC_MARKET_XPATH = "/html/body/div/div[2]/main/div[2]/div/div/div[4]/div[1]/div[1]/button[1]"
-LIVE_MARKET_XPATH = "/html/body/div/div[2]/main/div[2]/div/div/div[4]/div[1]/div[1]/button[2]"
-PAIR_BUTTONS_XPATH = "/html/body/div/div[2]/main/div[2]/div/div/div[4]/div[1]/div[2]/button"
-TIMER_XPATH = "/html/body/div/div[2]/main/div[2]/div/div/div[4]/div[2]/label/span/span[2]"
-MM_VALUE_XPATH = "/html/body/div/div[2]/main/div[2]/div/div/div[4]/div[3]/div[2]/div/div[1]/div/div[2]/span[1]"
-NEXT_MINUTE_BUTTON_XPATH = "/html/body/div/div[2]/main/div[2]/div/div/div[4]/div[3]/div[2]/div/div[1]/div/div[2]/button[1]"
-GENERATE_BUTTON_XPATH = "/html/body/div/div[2]/main/div[2]/div/div/div[4]/div[4]"
-RESULT_CARD_XPATH = "/html/body/div/div[2]/main/div[2]/div/div/div[5]/div[1]"
-STRENGTH_XPATH = "/html/body/div/div[2]/main/div[2]/div/div/div[5]/div[1]/div[3]/span[3]"
-DIRECTION_XPATH = "/html/body/div/div[2]/main/div[2]/div/div/div[5]/div[1]/div[1]/div[1]/div"
-RESULT_PAIR_XPATH = "/html/body/div/div[2]/main/div[2]/div/div/div[5]/div[1]/div[1]/div[2]/p[2]"
-TIMEFRAME_XPATH = "/html/body/div/div[2]/main/div[2]/div/div/div[5]/div[1]/div[1]/div[2]/p[3]"
-SUBCARDS_CONTAINER_XPATH = "/html/body/div/div[2]/main/div[2]/div/div/div[5]/div[4]"
-
-# ==========================================
-# SINGLE MASTER CSV LOGGING SYSTEM
-# ==========================================
-def get_or_create_master_csv():
-    log_dir = "trading_logs"
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
-    
-    filepath = os.path.join(log_dir, "all_trading_signals.csv")
-    
-    headers = [
-        "Timestamp", "Market", "Pair", "Timeframe", "Strength", 
-        "Web Signal", "My Signal (%K/%D)", "%K Value", "%D Value", 
-        "Subcards / Live Market Data", "Trade Result"
-    ]
-    
-    if not os.path.exists(filepath):
-        try:
-            with open(filepath, mode="w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow(headers)
-        except PermissionError:
-            st.error("⚠️ Permission Error: Close Excel or file viewers accessing 'all_trading_signals.csv'")
-            
-    return filepath
-
-def log_signal_to_csv(filepath, signal_data, trade_result):
-    subcards_text = " | ".join(signal_data.get("subcards", []))
-    
-    row = [
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        signal_data.get("market", ""),
-        signal_data.get("pair_name", ""),
-        signal_data.get("timeframe", ""),
-        signal_data.get("strength", ""),
-        signal_data.get("direction", ""),
-        signal_data.get("calc_direction", ""),
-        signal_data.get("k_val", "N/A"),
-        signal_data.get("d_val", "N/A"),
-        subcards_text,
-        trade_result
-    ]
-    
-    try:
-        with open(filepath, mode="a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(row)
-        return True
-    except PermissionError:
-        st.error("⚠️ Permission Error: Please CLOSE 'all_trading_signals.csv' in Excel so the app can log your trade result!")
-        return False
-
-# ==========================================
-# ADVANCED INDICATOR EXTRACTION LOGIC
-# ==========================================
-def extract_indicators(subcards):
-    k_val = None
-    d_val = None
-    rsi_val = None
-    candle_pattern = ""
-    
-    for card in subcards:
-        lower_card = card.lower()
-        
-        # 1. Extract %K
-        match_k = re.search(r'%k\s*\|\s*([0-9.-]+)', lower_card)
-        if match_k:
-            try: k_val = float(match_k.group(1))
-            except: pass
-            
-        # 2. Extract %D
-        match_d = re.search(r'%d\s*\|\s*([0-9.-]+)', lower_card)
-        if match_d:
-            try: d_val = float(match_d.group(1))
-            except: pass
-            
-        # 3. Extract RSI
-        match_rsi = re.search(r'rsi\s*(?:\(\d+\))?\s*\|\s*([0-9.-]+)', lower_card)
-        if match_rsi:
-            try: rsi_val = float(match_rsi.group(1))
-            except: pass
-            
-        # 4. Extract Candle Pattern
-        match_candle = re.search(r'candle\s*\|\s*([^|]+)', lower_card)
-        if match_candle:
-            candle_pattern = match_candle.group(1).strip()
-            
-    return k_val, d_val, rsi_val, candle_pattern
-
-# ==========================================
-# WINDOWS NOTIFICATION HELPER (CUSTOM GUI)
-# ==========================================
-def show_windows_notification(pair_name, direction, timeframe, strength, market, subcards=None, calc_direction="N/A"):
-    if subcards is None:
-        subcards = []
-        
-    try:
-        from plyer import notification
-        notification.notify(
-            title=f"🎯 {calc_direction} Signal ({market})!",
-            message=f"Pair: {pair_name}\nWebsite: {direction}\nYours: {calc_direction}",
-            app_name="Signal Scanner",
-            timeout=10
-        )
-    except: pass
-
-    if sys.platform == "win32":
-        def persistent_alert():
-            import tkinter as tk
-            from tkinter import font
-            
-            root = tk.Tk()
-            root.title(f"Signal Alert - {market}")
-            root.configure(bg="#121216")
-            root.attributes("-topmost", True)
-            
-            w = 560
-            h = min(360 + (len(subcards) * 40), 600) if subcards else 360
-            ws = root.winfo_screenwidth()
-            hs = root.winfo_screenheight()
-            x = (ws/2) - (w/2)
-            y = (hs/2) - (h/2)
-            root.geometry(f'{w}x{int(h)}+{int(x)}+{int(y)}')
-            
-            is_up = "BUY" in direction.upper() or "CALL" in direction.upper()
-            dir_color = "#00e676" if is_up else "#ff1744"
-            arrow = "📈 BUY" if is_up else "📉 SELL"
-            
-            calc_is_up = "BUY" in calc_direction.upper() or "CALL" in calc_direction.upper()
-            calc_dir_color = "#00e676" if calc_is_up else "#ff1744"
-            if "N/A" in calc_direction.upper() or "NEUTRAL" in calc_direction.upper(): 
-                calc_dir_color = "#d4d4d8"
-                calc_arrow = "➖ N/A"
-            else:
-                calc_arrow = "📈 BUY" if calc_is_up else "📉 SELL"
-
-            market_color = "#a855f7" if market == "OTC" else "#3b82f6"
-            
-            font_title = font.Font(family="Segoe UI", size=15, weight="bold")
-            font_pair = font.Font(family="Segoe UI", size=13)
-            font_dir = font.Font(family="Segoe UI", size=24, weight="bold")
-            font_btn = font.Font(family="Segoe UI", size=11, weight="bold")
-            font_sub = font.Font(family="Segoe UI", size=10)
-            
-            header = tk.Frame(root, bg=market_color)
-            header.pack(fill="x", pady=(0, 10))
-            tk.Label(header, text=f"{market} MARKET ALERT", font=font_btn, bg=market_color, fg="white", pady=6).pack()
-
-            tk.Label(root, text=f"🎯 {strength} SIGNAL FOUND!", font=font_title, bg="#121216", fg="#ffffff").pack(pady=2)
-            tk.Label(root, text=f"Pair: {pair_name}   |   Timeframe: {timeframe}", font=font_pair, bg="#121216", fg="#d4d4d8").pack(pady=2)
-            
-            signals_frame = tk.Frame(root, bg="#121216")
-            signals_frame.pack(fill="x", pady=15, padx=20)
-            
-            left_frame = tk.Frame(signals_frame, bg="#1e1e28", highlightbackground="#27272a", highlightthickness=1, padx=20, pady=10)
-            left_frame.pack(side="left", expand=True)
-            tk.Label(left_frame, text="WEB SIGNAL", font=font_btn, bg="#1e1e28", fg="#a1a1aa").pack()
-            tk.Label(left_frame, text=arrow, font=font_dir, bg="#1e1e28", fg=dir_color).pack(pady=5)
-            
-            right_frame = tk.Frame(signals_frame, bg="#1e1e28", highlightbackground="#27272a", highlightthickness=1, padx=20, pady=10)
-            right_frame.pack(side="right", expand=True)
-            tk.Label(right_frame, text="MY SIGNAL (%K/%D)", font=font_btn, bg="#1e1e28", fg="#a1a1aa").pack()
-            tk.Label(right_frame, text=calc_arrow, font=font_dir, bg="#1e1e28", fg=calc_dir_color).pack(pady=5)
-            
-            if subcards:
-                text_area = tk.Text(root, bg="#1e1e28", fg="#e4e4e7", font=font_sub, wrap="word", relief="flat", height=4)
-                text_area.pack(fill="both", expand=True, padx=20, pady=5)
-                for idx, sc in enumerate(subcards, 1):
-                    text_area.insert("end", f"#{idx}: {sc}\n\n")
-                text_area.config(state="disabled")
-
-            def on_close():
-                root.destroy()
-                
-            btn = tk.Button(root, text="ACKNOWLEDGE", font=font_btn, bg="#27272a", fg="white",
-                            activebackground="#3f3f46", activeforeground="white",
-                            command=on_close, relief="flat", cursor="hand2")
-            btn.pack(ipadx=24, ipady=8, pady=10)
-            root.lift()
-            root.focus_force()
-            root.mainloop()
-            
-        threading.Thread(target=persistent_alert).start()
-
-# ==========================================
-# PLAYWRIGHT ASYNC FUNCTIONS
-# ==========================================
-async def get_text(page, xpath, timeout=10000):
-    locator = page.locator(f"xpath={xpath}")
-    await locator.wait_for(state="visible", timeout=timeout)
-    return (await locator.inner_text()).strip()
-
-async def click_xpath(page, xpath, timeout=10000):
-    locator = page.locator(f"xpath={xpath}")
-    await locator.wait_for(state="visible", timeout=timeout)
-    await locator.click()
-    
-async def fetch_subcards_data(page):
-    subcards = []
-    try:
-        container = page.locator(f"xpath={SUBCARDS_CONTAINER_XPATH}")
-        await container.wait_for(state="visible", timeout=4000)
-        children = container.locator("> div")
-        count = await children.count()
-        if count > 0:
-            for i in range(count):
-                txt = (await children.nth(i).inner_text()).strip()
-                if txt:
-                    cleaned_txt = " | ".join([line.strip() for line in txt.split("\n") if line.strip()])
-                    subcards.append(cleaned_txt)
-        else:
-            raw_text = (await container.inner_text()).strip()
-            if raw_text:
-                subcards = [line.strip() for line in raw_text.split("\n") if line.strip()]
-    except Exception:
-        pass
-    return subcards
-
-async def login_and_setup(page, email, password, status_queue, market_type):
-    status_queue.put({"type": "STATUS", "msg": f"Logging in to {market_type} session..."})
-    await page.goto(URL, wait_until="domcontentloaded")
-    await page.locator("input[type='email'], input[name='email']").fill(email)
-    await page.locator("input[type='password'], input[name='password']").fill(password)
-    await page.locator("button[type='submit'], button:has-text('Login'), button:has-text('Sign in')").click()
-    await page.wait_for_load_state("networkidle")
-    await page.wait_for_timeout(3000)
-    await click_xpath(page, SIGNAL_MENU_XPATH, timeout=10000)
-    await page.wait_for_load_state("networkidle")
-    await page.wait_for_timeout(2000)
-    if market_type == "LIVE":
-        status_queue.put({"type": "STATUS", "msg": "Switching to LIVE Market..."})
-        await click_xpath(page, LIVE_MARKET_XPATH, timeout=10000)
-    else:
-        status_queue.put({"type": "STATUS", "msg": "Switching to OTC Market..."})
-        await click_xpath(page, OTC_MARKET_XPATH, timeout=10000)
-    await page.wait_for_timeout(2000)
-
-def get_timer_minute(timer_text):
-    parts = timer_text.strip().split(":")
-    if len(parts) != 3: return 0
-    return int(parts[1])
-
-def get_selected_minute(mm_text):
-    digits = "".join(ch for ch in mm_text if ch.isdigit())
-    if not digits: return 0
-    return int(digits)
-
-async def adjust_next_minute_if_needed(page):
-    for _ in range(60):
-        timer_text = await get_text(page, TIMER_XPATH)
-        selected_mm_text = await get_text(page, MM_VALUE_XPATH)
-        if (get_selected_minute(selected_mm_text) - get_timer_minute(timer_text)) % 60 == 2:
-            return
-        await click_xpath(page, NEXT_MINUTE_BUTTON_XPATH)
-        await page.wait_for_timeout(400)
-    raise Exception("Could not set minute 2 mins ahead.")
-
-async def bot_market_loop(email, password, market_type, status_queue, pause_event, stop_event, win_pos):
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=False,
-            slow_mo=50,
-            args=[f'--window-size=1280,800', f'--window-position={win_pos}', '--no-viewport']
-        )
-        context = await browser.new_context(no_viewport=True)
-        page = await context.new_page()
-
-        try:
-            await login_and_setup(page, email, password, status_queue, market_type)
-        except Exception as e:
-            status_queue.put({"type": "ERROR", "msg": f"{market_type} Login failed: {str(e)}"})
-            await browser.close()
-            return
-
-        scan_from_end_next = False
-
-        while not stop_event.is_set():
-            try:
-                if market_type == "LIVE": await click_xpath(page, LIVE_MARKET_XPATH)
-                else: await click_xpath(page, OTC_MARKET_XPATH)
-                await page.wait_for_timeout(1000)
-
-                pair_buttons = page.locator(f"xpath={PAIR_BUTTONS_XPATH}")
-                await pair_buttons.first.wait_for(state="visible", timeout=15000)
-                pair_count = await pair_buttons.count()
-                indexes = list(range(pair_count)) if not scan_from_end_next else list(range(pair_count - 1, -1, -1))
-                status_queue.put({"type": "STATUS", "msg": f"Starting 1-by-1 scan on TARGET pairs only..."})
-                signal_found = False
-
-                for idx in indexes:
-                    while pause_event.is_set() and not stop_event.is_set():
-                        await asyncio.sleep(0.5)
-                    if stop_event.is_set(): break
-
-                    pair = pair_buttons.nth(idx)
-                    pair_name = (await pair.inner_text()).strip()
-
-                    if pair_name not in TARGET_PAIRS:
-                        continue
-                        
-                    status_queue.put({"type": "STATUS", "msg": f"Checking {pair_name} ({idx+1}/{pair_count})..."})
-                    await pair.click()
-                    await page.wait_for_timeout(1000)
-
-                    await adjust_next_minute_if_needed(page)
-                    await click_xpath(page, GENERATE_BUTTON_XPATH)
-                    
-                    status_queue.put({"type": "STATUS", "msg": f"Generating {pair_name}... (Waiting for UI update)"})
-                    await page.wait_for_timeout(6000)
-                    
-                    await page.locator(f"xpath={STRENGTH_XPATH}").wait_for(state="visible", timeout=20000)
-                    strength = (await get_text(page, STRENGTH_XPATH)).upper()
-
-                    if "STRONG" in strength and "MODERATE" not in strength and "WEAK" not in strength:
-                        direction = (await get_text(page, DIRECTION_XPATH)).upper()
-                        timeframe = await get_text(page, TIMEFRAME_XPATH)
-                        subcards = await fetch_subcards_data(page)
-                        
-                        # 1. Extract all Custom Indicators
-                        k_val, d_val, rsi_val, candle_pattern = extract_indicators(subcards)
-                        calc_direction = "N/A"
-                        
-                        if k_val is not None and d_val is not None:
-                            if k_val > d_val:
-                                calc_direction = "BUY / CALL"
-                            elif k_val < d_val:
-                                calc_direction = "PUT / SELL"
-                            else:
-                                calc_direction = "NEUTRAL"
-                                
-                        # Use Custom Direction to determine BUY/SELL tests (Fall back to Web Direction if Custom is N/A)
-                        active_signal = calc_direction if calc_direction not in ["N/A", "NEUTRAL"] else direction
-                        is_buy = "BUY" in active_signal or "CALL" in active_signal
-                        is_sell = "PUT" in active_signal or "SELL" in active_signal
-
-                        skip_reason = None
-                        
-                        # ==========================================
-                        # APPLY STRICT TRADE FILTERS
-                        # ==========================================
-                        
-                        # Filter A: Stochastic Logic
-                        if k_val is not None and d_val is not None:
-                            if k_val >= 80 and d_val >= 80:
-                                skip_reason = f"%K & %D are >= 80"
-                            elif abs(k_val - d_val) < 3:
-                                skip_reason = f"Weak Stoch crossover (|%K-%D| = {round(abs(k_val - d_val), 2)} < 3)"
-
-                        # Filter B: Candle Constraints
-                        if skip_reason is None:
-                            candle_lower = candle_pattern.lower()
-                            if "doji" in candle_lower or "neutral" in candle_lower:
-                                skip_reason = "Candle is Doji or Neutral"
-                            elif "bullish engulfing" in candle_lower and not is_buy:
-                                skip_reason = "Bullish Engulfing but signal is not BUY"
-                            elif "bearish engulfing" in candle_lower and not is_sell:
-                                skip_reason = "Bearish Engulfing but signal is not SELL"
-                            elif "pin bar wick up" in candle_lower and not is_sell:
-                                skip_reason = "Pin Bar Wick Up but signal is not SELL"
-                            elif "pin bar wick down" in candle_lower and not is_buy:
-                                skip_reason = "Pin Bar Wick Down but signal is not BUY"
-
-                        # Filter C: Strict RSI Limits
-                        if skip_reason is None:
-                            if rsi_val is not None:
-                                if is_buy and rsi_val >= 30:
-                                    skip_reason = f"BUY signal but RSI ({rsi_val}) is not < 30"
-                                elif is_sell and rsi_val <= 70:
-                                    skip_reason = f"SELL signal but RSI ({rsi_val}) is not > 70"
-                            else:
-                                skip_reason = "Missing RSI Data (Cannot verify constraints)"
-
-                        # Apply Skip if ANY filter failed
-                        if skip_reason:
-                            status_queue.put({"type": "STATUS", "msg": f"Skipped {pair_name} - {skip_reason}"})
-                            continue
-                            
-                        # If passed all rules, proceed to alert!
-                        status_queue.put({"type": "STATUS", "msg": f"{strength} signal found on {pair_name}!"})
-                        result_data = {
-                            "direction": direction, "pair_name": pair_name,
-                            "timeframe": timeframe, "strength": strength, 
-                            "market": market_type, "subcards": subcards,
-                            "calc_direction": calc_direction,
-                            "k_val": k_val, "d_val": d_val
-                        }
-                        status_queue.put({"type": "SIGNAL", "data": result_data})
-                        signal_found = True
-                        pause_event.set()
-                        scan_from_end_next = not scan_from_end_next
-                        break
-                    else:
-                        status_queue.put({"type": "STATUS", "msg": f"Skipped {pair_name} - Signal was '{strength}' (Not Strong)"})
-                        
-                if not signal_found and not stop_event.is_set():
-                    status_queue.put({"type": "STATUS", "msg": "All target pairs scanned. Restarting..."})
-                    scan_from_end_next = False
-                    await asyncio.sleep(1)
-
-            except Exception as e:
-                status_queue.put({"type": "ERROR", "msg": f"Error: {str(e)}"})
-                await page.reload(wait_until="domcontentloaded")
-                await login_and_setup(page, email, password, status_queue, market_type)
-
-        await browser.close()
-        status_queue.put({"type": "STATUS", "msg": "Bot Stopped."})
-
-def run_bot_thread(email, password, market, queue, pause_ev, stop_ev, win_pos):
-    if sys.platform == "win32":
-        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(bot_market_loop(email, password, market, queue, pause_ev, stop_ev, win_pos))
-    except Exception as e:
-        queue.put({"type": "ERROR", "msg": f"Crash: {str(e)}"})
-
-# ==========================================
-# STREAMLIT UI
-# ==========================================
-st.set_page_config(page_title="Dual Independent Scanner", layout="wide")
-
-# Single Master CSV Path
-if "csv_filename" not in st.session_state:
-    st.session_state["csv_filename"] = get_or_create_master_csv()
-
-markets = ["OTC", "LIVE"]
-for m in markets:
-    if f"{m}_queue" not in st.session_state:
-        st.session_state[f"{m}_queue"] = queue.Queue()
-        st.session_state[f"{m}_pause"] = threading.Event()
-        st.session_state[f"{m}_stop"] = threading.Event()
-        st.session_state[f"{m}_running"] = False
-        st.session_state[f"{m}_signal"] = None
-        st.session_state[f"{m}_status"] = "Ready to start."
-        st.session_state[f"{m}_notified"] = False
-
-def generate_html_card(result_data):
-    direction = result_data.get("direction", "").upper()
-    calc_direction = result_data.get("calc_direction", "N/A").upper()
-    subcards = result_data.get("subcards", [])
-    
-    is_up = "BUY" in direction or "CALL" in direction
-    if is_up:
-        border_color = "#00e676"
-        anim_name = "pulse-green"
-        text_color = "#00e676"
-        glow_color = "rgba(0, 230, 118, 0.4)"
-        icon = "📈 BUY"
-    else:
-        border_color = "#ff1744"
-        anim_name = "pulse-red"
-        text_color = "#ff1744"
-        glow_color = "rgba(255, 23, 68, 0.4)"
-        icon = "📉 SELL"
-        
-    calc_is_up = "BUY" in calc_direction or "CALL" in calc_direction
-    if "N/A" in calc_direction or "NEUTRAL" in calc_direction:
-        calc_text_color = "#d4d4d8"
-        calc_glow = "rgba(212, 212, 216, 0.2)"
-        calc_icon = "➖ N/A"
-    else:
-        calc_text_color = "#00e676" if calc_is_up else "#ff1744"
-        calc_glow = "rgba(0, 230, 118, 0.4)" if calc_is_up else "rgba(255, 23, 68, 0.4)"
-        calc_icon = "📈 BUY" if calc_is_up else "📉 SELL"
-        
-    badge_bg = "linear-gradient(90deg, #9333ea, #a855f7)" if result_data["market"] == "OTC" else "linear-gradient(90deg, #2563eb, #3b82f6)"
-    
-    subcards_html = ""
-    if subcards:
-        subcards_html = "<div class='subcards-section'><div class='subcards-title'>📊 Subcards Analysis</div>"
-        for idx, sc in enumerate(subcards, 1):
-            subcards_html += f"<div class='subcard-item'><span class='subcard-num'>#{idx}</span> {html.escape(sc)}</div>"
-        subcards_html += "</div>"
-
-    return f"""
+# 3. CSS Styling (Including a hack to clean up the Uploader Box)
+st.markdown("""
     <style>
-    @keyframes pulse-green {{
-    0% {{ box-shadow: 0 0 15px rgba(0, 230, 118, 0.3); }}
-    50% {{ box-shadow: 0 0 35px rgba(0, 230, 118, 0.6); transform: scale(1.01); }}
-    100% {{ box-shadow: 0 0 15px rgba(0, 230, 118, 0.3); }}
-    }}
-    @keyframes pulse-red {{
-    0% {{ box-shadow: 0 0 15px rgba(255, 23, 68, 0.3); }}
-    50% {{ box-shadow: 0 0 35px rgba(255, 23, 68, 0.6); transform: scale(1.01); }}
-    100% {{ box-shadow: 0 0 15px rgba(255, 23, 68, 0.3); }}
-    }}
-    .signal-card {{
-    background: linear-gradient(145deg, #1e1e28, #14141a);
-    border: 2px solid {border_color};
-    border-radius: 24px;
-    padding: 30px;
-    color: #ffffff;
-    font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-    text-align: center;
-    position: relative;
-    animation: {anim_name} 2s infinite ease-in-out;
-    transition: transform 0.3s ease;
-    max-width: 500px;
-    margin: auto;
-    }}
-    .market-badge {{
-    position: absolute;
-    top: 0; right: 0; background: {badge_bg}; padding: 8px 24px;
-    border-bottom-left-radius: 20px; border-top-right-radius: 20px;
-    font-weight: 800; font-size: 14px; letter-spacing: 1px;
-    }}
-    .direction-label {{
-    color: #8b8b9e; font-size: 11px; font-weight: 700;
-    letter-spacing: 2px; text-transform: uppercase; margin-top: 15px;
-    }}
-    .direction-value {{
-    font-size: 32px; font-weight: 900; margin: 10px 0 25px;
-    }}
-    .data-row {{
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 16px; padding: 12px 22px; margin-top: 14px;
-    display: flex; justify-content: space-between; align-items: center;
-    }}
-    .row-label {{ color: #a1a1aa; font-weight: 600; font-size: 14px; text-transform: uppercase; }}
-    .row-value {{ font-size: 20px; font-weight: 800; color: #fff; }}
-    .subcards-section {{
-        margin-top: 16px; text-align: left; background: rgba(0,0,0,0.2);
-        padding: 12px; border-radius: 12px; max-height: 160px; overflow-y: auto;
-    }}
-    .subcards-title {{ font-size: 12px; font-weight: 800; color: #a1a1aa; margin-bottom: 8px; text-transform: uppercase; }}
-    .subcard-item {{ font-size: 12px; color: #d4d4d8; padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }}
-    .subcard-num {{ color: #a855f7; font-weight: bold; margin-right: 6px; }}
-    </style>
-    <div class="signal-card">
-    <div class="market-badge">{html.escape(result_data["market"])} MARKET</div>
+    .stApp { background-color: #0B0E14; color: #8B9BB4; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+    h1, h2, h3, h4 { color: #E2E8F0; margin-bottom: 5px; }
     
-    <div style="display: flex; justify-content: space-between; background: rgba(0,0,0,0.2); border-radius: 16px; padding: 10px; margin-bottom: 20px; margin-top: 10px;">
-        <div style="flex: 1; text-align: center; border-right: 1px solid rgba(255,255,255,0.1);">
-            <div class="direction-label">Web Signal</div>
-            <div class="direction-value" style="color: {text_color}; text-shadow: 0 0 25px {glow_color};">
-                {icon}
-            </div>
-        </div>
-        <div style="flex: 1; text-align: center;">
-            <div class="direction-label">My Signal (%K/%D)</div>
-            <div class="direction-value" style="color: {calc_text_color}; text-shadow: 0 0 25px {calc_glow};">
-                {calc_icon}
-            </div>
-        </div>
-    </div>
+    /* CLEAN UP THE UPLOADER UI TO LOOK LIKE A PASTE BOX */
+    [data-testid="stFileUploadDropzone"] > div > div > span { display: none; }
+    [data-testid="stFileUploadDropzone"] > div > div::before { 
+        content: "CLICK HERE AND PRESS CTRL+V TO PASTE CHART"; 
+        color: #00FF99; 
+        font-weight: bold; 
+        font-size: 16px;
+    }
+    [data-testid="stFileUploadDropzone"] button { display: none; }
+    
+    /* Top Signal Box */
+    .signal-box { background-color: #121620; border: 1px solid #E63946; border-radius: 10px; padding: 20px; text-align: center; margin-bottom: 15px;}
+    .signal-put { color: #FF3366; font-size: 48px; font-weight: bold; text-shadow: 0 0 10px rgba(255,51,102,0.5); }
+    .signal-call { color: #00FF99; font-size: 48px; font-weight: bold; text-shadow: 0 0 10px rgba(0,255,153,0.5); }
+    
+    /* 6-Grid Metrics */
+    .metric-card { background-color: #121620; border: 1px solid #1E293B; border-radius: 8px; padding: 10px; text-align: center; margin-bottom: 10px; font-size: 11px; font-weight: bold; color: #64748b; text-transform: uppercase; }
+    .metric-val-orange { color: #FFB703; font-size: 16px; margin-top: 5px; display: block; }
+    .metric-val-cyan { color: #00e5ff; font-size: 16px; margin-top: 5px; display: block; }
+    .metric-val-purple { color: #a855f7; font-size: 16px; margin-top: 5px; display: block; }
+    
+    /* Analysis Breakdown Rows */
+    .analysis-row { display: flex; justify-content: space-between; border-bottom: 1px solid #1E293B; padding: 8px 0; font-size: 13px; }
+    .analysis-val { color: #E2E8F0; }
+    
+    /* Structure Event Box */
+    .choch-box { background-color: #1a0b2e; border: 1px solid #4a148c; border-radius: 8px; padding: 15px; display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px;}
+    .choch-badge { background-color: #6a1b9a; color: white; padding: 4px 10px; border-radius: 4px; font-size: 12px; font-weight: bold; margin-right: 15px;}
+    .choch-text { color: #E2E8F0; font-size: 14px; flex-grow: 1; }
+    .choch-price { color: #00e5ff; font-weight: bold; font-size: 14px; }
+    
+    /* Section Headers */
+    .section-header { display: flex; align-items: center; margin-top: 25px; margin-bottom: 15px; color: #00e5ff; font-weight: 600; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; }
+    .section-line { flex-grow: 1; height: 1px; background-color: #1E293B; margin-left: 15px; }
 
-    <div class="data-row">
-    <span class="row-label">Pair</span>
-    <span class="row-value">{html.escape(result_data["pair_name"])}</span>
-    </div>
-    <div class="data-row">
-    <span class="row-label">Timeframe</span>
-    <span class="row-value">{html.escape(result_data["timeframe"])}</span>
-    </div>
+    /* Custom Progress Bars Container */
+    .bar-row { display: flex; align-items: center; margin-bottom: 10px; background-color: transparent; border: 1px solid #1E293B; padding: 8px; border-radius: 6px;}
+    .bar-label-box { width: 120px; border: 1px solid #334155; border-radius: 4px; padding: 4px 8px; font-size: 12px; text-align: center; font-weight: bold; display: flex; align-items: center; justify-content: center;}
+    .bar-label-red { color: #FF3366; background-color: rgba(255, 51, 102, 0.1); }
+    .bar-label-green { color: #00FF99; background-color: rgba(0, 255, 153, 0.1); }
+    .bar-label-blue { color: #60a5fa; background-color: rgba(96, 165, 250, 0.1); }
+    .c-label { width: 80px; font-size: 12px; color: #64748b; }
+    .pressure-label { width: 160px; font-size: 12px; color: #94a3b8; font-weight: bold; text-transform: uppercase; }
     
-    {subcards_html}
+    /* The actual bars */
+    .bar-track { flex-grow: 1; height: 4px; background-color: #1e293b; border-radius: 2px; margin: 0 15px; overflow: hidden;}
+    .bar-fill { height: 100%; border-radius: 2px; }
+    .bar-fill-red { background-color: #FF3366; box-shadow: 0 0 5px #FF3366;}
+    .bar-fill-green { background-color: #00FF99; box-shadow: 0 0 5px #00FF99;}
+    .bar-fill-blue { background-color: #3b82f6; box-shadow: 0 0 5px #3b82f6;}
+    .bar-fill-purple { background-color: #a855f7; box-shadow: 0 0 5px #a855f7;}
+    
+    .bar-value { width: 40px; font-size: 14px; font-weight: bold; text-align: right; }
+    .val-red { color: #FF3366; }
+    .val-green { color: #00FF99; }
+    .val-blue { color: #60a5fa; }
+    .val-purple { color: #a855f7; }
+    .val-neutral { color: #94a3b8; }
+    </style>
+""", unsafe_allow_html=True)
+
+st.title("⚡ Ultra-Fast Paste Terminal")
+
+# Live Ticking Clock
+clock_html = """
+<div style="padding: 10px; background-color: #121620; border-radius: 8px; border: 1px solid #1E293B; color: #8B9BB4; font-size: 14px; margin-bottom:15px;">
+    <div style="display: flex; justify-content: space-between;">
+        <span>SYS CLOCK: <strong id="current-time" style="color: #E2E8F0;">--:--:--</strong></span>
+        <span>ENTRY (NEXT CANDLE): <strong id="entry-time" style="color: #00FF99;">--:--:--</strong></span>
+        <span>EXPIRY (+1 MIN): <strong id="target-time" style="color: #FFB703;">--:--:--</strong></span>
+    </div>
+</div>
+<script>
+    function updateClock() {
+        const now = new Date();
+        const nextMinute = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes() + 1, 0, 0);
+        const expiry = new Date(nextMinute.getTime() + 60000);
+        
+        document.getElementById('current-time').innerText = now.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
+        document.getElementById('entry-time').innerText = nextMinute.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
+        document.getElementById('target-time').innerText = expiry.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
+    }
+    setInterval(updateClock, 1000); updateClock(); 
+</script>
+"""
+components.html(clock_html, height=50)
+
+# Helper functions for UI
+def custom_bar(label_col1, label_col2, color_class, percentage, label_col2_class=""):
+    fill_class = f"bar-fill-{color_class}"
+    val_class = f"val-{color_class}" if color_class else "val-neutral"
+    return f"""
+    <div class="bar-row" style="border:none; padding: 5px 0;">
+        <div class="c-label {label_col2_class}">{label_col1}</div>
+        <div class="bar-track"><div class="bar-fill {fill_class}" style="width: {percentage}%;"></div></div>
+        <div class="bar-value {val_class}">{percentage}%</div>
     </div>
     """
 
-st.title("🚀 Independent Market Scanners")
+def custom_candle_bar(c_index, name, color_class, percentage, icon=""):
+    fill_class = f"bar-fill-{color_class}"
+    box_class = f"bar-label-{color_class}" if color_class != 'blue' else "bar-label-blue"
+    return f"""
+    <div class="bar-row">
+        <div class="c-label">{c_index}</div>
+        <div class="bar-label-box {box_class}">{icon} {name}</div>
+        <div class="bar-track"><div class="bar-fill {fill_class}" style="width: {percentage}%;"></div></div>
+        <div class="bar-value val-neutral">{percentage}%</div>
+    </div>
+    """
 
-with st.sidebar:
-    st.header("Credentials")
-    email_input = st.text_input("Email", value="mayurlohar333@gmail.com")
-    pass_input = st.text_input("Password", type="password", value="mayur.....")
-    st.divider()
+uploaded_files = st.file_uploader("Upload", type=["png", "jpg", "jpeg"], label_visibility="collapsed")
+
+if uploaded_files:
+    # 1. Display the raw image to the user instantly
+    img = Image.open(uploaded_files)
+    st.image(img, use_container_width=True)
+    st.markdown("---")
     
-    st.header("📁 Master CSV Storage")
-    st.code(st.session_state["csv_filename"], language="text")
-    st.info("All trades across all sessions are appended continuously into this file.")
-    st.divider()
-
-col1, col2 = st.columns(2)
-
-with col1:
-    st.header("🟪 OTC Scanner")
-    if not st.session_state["OTC_running"]:
-        if st.button("▶️ Scan OTC Market", use_container_width=True, type="primary"):
-            st.session_state["OTC_stop"].clear()
-            st.session_state["OTC_pause"].clear()
-            st.session_state["OTC_running"] = True
-            st.session_state["OTC_signal"] = None
-            st.session_state["OTC_notified"] = False
-            threading.Thread(target=run_bot_thread, args=(email_input, pass_input, "OTC", st.session_state["OTC_queue"], st.session_state["OTC_pause"], st.session_state["OTC_stop"], "0,0"), daemon=True).start()
-            st.rerun()
-    else:
-        if st.button("🛑 Stop OTC Scanner", use_container_width=True):
-            st.session_state["OTC_stop"].set()
-            st.session_state["OTC_pause"].set()
-            st.session_state["OTC_running"] = False
-            st.rerun()
-
-with col2:
-    st.header("🟦 LIVE Scanner")
-    if not st.session_state["LIVE_running"]:
-        if st.button("▶️ Scan Live Market", use_container_width=True, type="primary"):
-            st.session_state["LIVE_stop"].clear()
-            st.session_state["LIVE_pause"].clear()
-            st.session_state["LIVE_running"] = True
-            st.session_state["LIVE_signal"] = None
-            st.session_state["LIVE_notified"] = False
-            threading.Thread(target=run_bot_thread, args=(email_input, pass_input, "LIVE", st.session_state["LIVE_queue"], st.session_state["LIVE_pause"], st.session_state["LIVE_stop"], "100,100"), daemon=True).start()
-            st.rerun()
-    else:
-        if st.button("🛑 Stop Live Scanner", use_container_width=True):
-            st.session_state["LIVE_stop"].set()
-            st.session_state["LIVE_pause"].set()
-            st.session_state["LIVE_running"] = False
-            st.rerun()
-
-st.divider()
-
-# --- PROCESS QUEUES ---
-for m in markets:
-    while not st.session_state[f"{m}_queue"].empty():
-        msg = st.session_state[f"{m}_queue"].get()
-        if msg["type"] == "STATUS": st.session_state[f"{m}_status"] = msg["msg"]
-        elif msg["type"] == "ERROR": st.error(f"{m} Error: " + msg["msg"])
-        elif msg["type"] == "SIGNAL": st.session_state[f"{m}_signal"] = msg["data"]
-
-# --- DISPLAY UI STATUS & WIN/LOSS CONTROLS ---
-display_cols = st.columns(2)
-
-for i, m in enumerate(markets):
-    with display_cols[i]:
-        if st.session_state[f"{m}_signal"]:
-            sig = st.session_state[f"{m}_signal"]
-            if not st.session_state[f"{m}_notified"]:
-                show_windows_notification(
-                    sig["pair_name"], 
-                    sig["direction"], 
-                    sig["timeframe"], 
-                    sig["strength"], 
-                    sig["market"],
-                    sig.get("subcards", []),
-                    sig.get("calc_direction", "N/A")
+    if st.button("🚀 EXECUTE FAST ANALYSIS", use_container_width=True, type="primary"):
+        with st.spinner("Compressing image & processing technicals..."):
+            try:
+                # 2. PILLOW COMPRESSION: Shrink the image to slash upload time
+                fast_img = img.copy()
+                if fast_img.mode in ("RGBA", "P"):
+                    fast_img = fast_img.convert("RGB")
+                
+                # Resize keeping aspect ratio (max 800x800). This drops the size from MBs to KBs.
+                fast_img.thumbnail((800, 800)) 
+                
+                now = datetime.now()
+                next_candle_start = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
+                entry_time_str = next_candle_start.strftime("%H:%M")
+                
+                prompt = """
+                You are an expert algorithmic trading system. Analyze the 1-minute chart.
+                Return ONLY a raw JSON object formatted EXACTLY like this (replace with analyzed values):
+                {
+                    "asset": "OTC_ASSET",
+                    "signal_direction": "PUT",
+                    "current_price": "0.0000",
+                    "trend": "BEARISH",
+                    "confidence": "LOW",
+                    "trend_type": "UPTREND",
+                    "signal_strength": 62,
+                    "market_pressure_split": {"put": 62, "call": 38},
+                    "support": "0.19957",
+                    "resistance": "0.20054",
+                    "payout": "94%",
+                    "analysis": {
+                        "ema_alignment": "Bearish Stack",
+                        "rsi": "58.7 Neutral",
+                        "macd": "Negative",
+                        "market_structure": "UPTREND",
+                        "candle_momentum": "Strong Bearish",
+                        "rejection_candle": "None",
+                        "volume_breakout": "No",
+                        "volatility": "0.14%",
+                        "price_vs_bb": "Inside Band",
+                        "pullback": "Minimal",
+                        "support_prox": "44pips",
+                        "resistance_prox": "3pips",
+                        "bos": "None",
+                        "choch": "Bear Reversal"
+                    },
+                    "structure_event": {
+                        "type": "CHOCH ↓",
+                        "desc": "Character changed — prior structure broken.",
+                        "price": "0.20076"
+                    },
+                    "candles": [
+                        {"id": "C0 (Latest)", "name": "Weak Bear", "type": "red", "val": 50, "icon": "▽"},
+                        {"id": "C1", "name": "Hang. Man", "type": "red", "val": 21, "icon": "🔨"},
+                        {"id": "C2", "name": "Weak Bear", "type": "red", "val": 53, "icon": "▽"},
+                        {"id": "C3", "name": "Bull Marubozu", "type": "green", "val": 96, "icon": "🟩"},
+                        {"id": "C4", "name": "Bull Engulf", "type": "green", "val": 47, "icon": "🟩"},
+                        {"id": "C5", "name": "Spinning Top", "type": "blue", "val": 21, "icon": "🌀"}
+                    ],
+                    "pressure": {
+                        "bull_body": 45, "bear_body": 55, "volume": 33,
+                        "momentum": 50, "bull_wick": 74, "bear_wick": 19,
+                        "overall_summary": "Overall pressure: BEARISH - Body dominance: 55%"
+                    }
+                }
+                """
+                
+                # Send the tiny, compressed image (`fast_img`) instead of the massive original
+                response = client.models.generate_content(
+                    model="gemini-3.6-flash",
+                    contents=[prompt, fast_img]
                 )
-                st.toast(f"{sig['strength']} Signal on {sig['pair_name']} ({m})!", icon='🎯')
-                st.session_state[f"{m}_notified"] = True
-
-            st.success(f"🎯 {sig['strength']} Signal Found!")
-            components.html(generate_html_card(sig), height=620)
-            
-            btn_col1, btn_col2, btn_col3 = st.columns(3)
-            
-            with btn_col1:
-                if st.button("✅ WIN", type="primary", use_container_width=True, key=f"win_{m}"):
-                    if log_signal_to_csv(st.session_state["csv_filename"], sig, "WIN"):
-                        st.toast(f"Logged WIN for {sig['pair_name']}!", icon="🎉")
-                        st.session_state[f"{m}_signal"] = None
-                        st.session_state[f"{m}_notified"] = False
-                        st.session_state[f"{m}_pause"].clear()
-                        st.rerun()
+                
+                raw_response = response.text.strip()
+                if raw_response.startswith("```json"): raw_response = raw_response[7:-3].strip()
+                elif raw_response.startswith("```"): raw_response = raw_response[3:-3].strip()
+                data = json.loads(raw_response)
+                
+                # --- RENDER UI ---
+                col1, col2 = st.columns([1.2, 1])
+                
+                with col1:
+                    st.markdown(f"### 🎯 {data.get('asset', 'ASSET')}")
                     
-            with btn_col2:
-                if st.button("❌ LOSS", use_container_width=True, key=f"loss_{m}"):
-                    if log_signal_to_csv(st.session_state["csv_filename"], sig, "LOSS"):
-                        st.toast(f"Logged LOSS for {sig['pair_name']}!", icon="⚠️")
-                        st.session_state[f"{m}_signal"] = None
-                        st.session_state[f"{m}_notified"] = False
-                        st.session_state[f"{m}_pause"].clear()
-                        st.rerun()
+                    direction = data.get('signal_direction', 'PUT')
+                    sig_class = "signal-call" if direction == "CALL" else "signal-put"
+                    arrow = "▲" if direction == "CALL" else "▼"
+                    st.markdown(f'<div class="signal-box"><div class="{sig_class}">{arrow}<br>{direction}</div></div>', unsafe_allow_html=True)
                     
-            with btn_col3:
-                if st.button("⏭️ SKIP", use_container_width=True, key=f"skip_{m}"):
-                    if log_signal_to_csv(st.session_state["csv_filename"], sig, "SKIPPED"):
-                        st.session_state[f"{m}_signal"] = None
-                        st.session_state[f"{m}_notified"] = False
-                        st.session_state[f"{m}_pause"].clear()
-                        st.rerun()
+                    g1, g2, g3 = st.columns(3)
+                    g1.markdown(f"<div class='metric-card'>TREND<span class='metric-val-orange'>{data.get('trend', '-')}</span></div>", unsafe_allow_html=True)
+                    g2.markdown(f"<div class='metric-card'>NEXT ENTRY<span class='metric-val-cyan'>{entry_time_str}</span></div>", unsafe_allow_html=True)
+                    g3.markdown(f"<div class='metric-card'>CURRENT PRICE<span class='metric-val-purple'>{data.get('current_price', '-')}</span></div>", unsafe_allow_html=True)
+                    
+                    g4, g5, g6 = st.columns(3)
+                    g4.markdown(f"<div class='metric-card'>CONFIDENCE<span class='metric-val-orange'>{data.get('confidence', '-')}</span></div>", unsafe_allow_html=True)
+                    g5.markdown(f"<div class='metric-card'>EXPIRY<span class='metric-val-cyan'>1 MIN</span></div>", unsafe_allow_html=True)
+                    g6.markdown(f"<div class='metric-card'>TREND TYPE<span class='metric-val-cyan'>{data.get('trend_type', '-')}</span></div>", unsafe_allow_html=True)
+                    
+                    st.markdown(f"<div style='color:#64748b; font-size:12px; font-weight:bold; margin-top:10px;'>SIGNAL STRENGTH <span style='float:right; color:#00FF99; font-size:16px;'>{data.get('signal_strength', 50)}%</span></div>", unsafe_allow_html=True)
+                    st.progress(data.get('signal_strength', 50) / 100.0)
+                    
+                    put_p = data.get('market_pressure_split', {}).get('put', 50)
+                    call_p = data.get('market_pressure_split', {}).get('call', 50)
+                    st.markdown(f"""
+                        <div style="display:flex; width:100%; height:24px; border-radius:4px; overflow:hidden; margin-top:15px; margin-bottom:15px;">
+                            <div style="width:{put_p}%; background-color:#FF3366; text-align:left; font-size:12px; color:white; padding: 4px 10px; font-weight:bold;">PUT {put_p}%</div>
+                            <div style="width:{call_p}%; background-color:#00FF99; text-align:right; font-size:12px; color:#121620; padding: 4px 10px; font-weight:bold;">CALL {call_p}%</div>
+                        </div>
+                    """, unsafe_allow_html=True)
+                    
+                    sr1, sr2 = st.columns(2)
+                    sr1.markdown(f"<div class='metric-card' style='border-color:#4a0f1d;'>RESISTANCE<span class='metric-val-cyan' style='color:#FF3366;'>{data.get('resistance', '-')}</span></div>", unsafe_allow_html=True)
+                    sr2.markdown(f"<div class='metric-card' style='border-color:#063b27;'>SUPPORT<span class='metric-val-cyan' style='color:#00FF99;'>{data.get('support', '-')}</span></div>", unsafe_allow_html=True)
+                    st.markdown(f"<div class='metric-card' style='border-color:#4a148c; text-align:left; display:flex; justify-content:space-between; align-items:center;'><div>PAYOUT<br><span style='font-size:10px; font-weight:normal;'>Platform return</span></div><span class='metric-val-purple' style='font-size:24px; margin:0;'>{data.get('payout', '-')}</span></div>", unsafe_allow_html=True)
+                    
+                with col2:
+                    st.markdown("""<div class="section-header" style="margin-top:0;"><span class="section-icon">🔬</span> ANALYSIS BREAKDOWN <div class="section-line"></div></div>""", unsafe_allow_html=True)
+                    ana = data.get('analysis', {})
+                    for key, val in ana.items():
+                        formatted_key = key.replace('_', ' ').title()
+                        val_class = "val-red" if "Bear" in str(val) or "Negative" in str(val) else "val-green" if "Bull" in str(val) or "UPTREND" in str(val) else "analysis-val"
+                        st.markdown(f"<div class='analysis-row'><span>{formatted_key}</span><span class='{val_class}'>{val}</span></div>", unsafe_allow_html=True)
+                
+                st.markdown("""<div class="section-header"><span class="section-icon">🧱</span> STRUCTURE EVENTS <div class="section-line"></div></div>""", unsafe_allow_html=True)
+                evt = data.get('structure_event', {})
+                st.markdown(f"""
+                <div class="choch-box">
+                    <div class="choch-badge">{evt.get('type', 'CHOCH')}</div>
+                    <div class="choch-text">{evt.get('desc', 'Structure shift detected.')}</div>
+                    <div class="choch-price">{evt.get('price', '0.000')}</div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.markdown("""<div class="section-header"><span class="section-icon">🕯️</span> CANDLE MOVEMENT <div class="section-line"></div></div>""", unsafe_allow_html=True)
+                for c in data.get('candles', []):
+                    st.markdown(custom_candle_bar(c.get('id'), c.get('name'), c.get('type'), c.get('val'), c.get('icon')), unsafe_allow_html=True)
+                
+                st.markdown("""<div class="section-header"><span class="section-icon">📊</span> MARKET PRESSURE <div class="section-line"></div></div>""", unsafe_allow_html=True)
+                pres = data.get('pressure', {})
+                html_pres = custom_bar("BULL BODY PRESS.", "", "green", pres.get('bull_body', 0), "pressure-label")
+                html_pres += custom_bar("BEAR BODY PRESS.", "", "red", pres.get('bear_body', 0), "pressure-label")
+                html_pres += custom_bar("VOLUME PRESSURE", "", "blue", pres.get('volume', 0), "pressure-label")
+                html_pres += custom_bar("MOMENTUM (EMA)", "", "purple", pres.get('momentum', 0), "pressure-label")
+                html_pres += custom_bar("BULL WICK REJECT.", "", "green", pres.get('bull_wick', 0), "pressure-label")
+                html_pres += custom_bar("BEAR WICK REJECT.", "", "red", pres.get('bear_wick', 0), "pressure-label")
+                st.markdown(html_pres, unsafe_allow_html=True)
+                
+                st.markdown(f"<div style='border: 1px solid #1e293b; border-radius: 8px; padding: 15px; margin-top: 10px; font-size: 13px; color: #e2e8f0;'><strong>{pres.get('overall_summary', '')}</strong></div>", unsafe_allow_html=True)
 
-        elif st.session_state[f"{m}_running"]:
-            st.info(f"🔄 {m} Bot is scanning...")
-            st.code(st.session_state[f"{m}_status"], language="text")
-        else:
-            st.write(f"💤 {m} Bot is offline.")
-
-if st.session_state["OTC_running"] or st.session_state["LIVE_running"]:
-    time.sleep(1)
-    st.rerun()
-
-
-    # python -m streamlit run "C:\Users\DELL-L5420\Desktop\New folder (2)\Kumar.py"
+            except json.JSONDecodeError:
+                st.error("JSON Error.")
+                st.code(raw_response)
+            except Exception as e:
+                st.error(f"Error: {e}")
