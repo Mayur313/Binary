@@ -9,7 +9,7 @@ from google import genai
 from datetime import datetime, timedelta
 
 # 1. Initialize the Gemini Client
-client = genai.Client(api_key="AQ.Ab8RN6KD-ntRbySz0N6Occomp8170th8g3PxK64pjreBuOeC5Q")
+client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 
 # 2. Configure the Streamlit Page
 st.set_page_config(page_title="Ultra-Fast Terminal", layout="wide", initial_sidebar_state="collapsed")
